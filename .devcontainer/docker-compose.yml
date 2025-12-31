@@ -1,8 +1,8 @@
-name: ${COMPOSE_PROJECT_NAME:-dartwing}
+name: ${COMPOSE_PROJECT_NAME:-gateway-project}
 version: "3.7"
 services:
     gateway:
-        container_name: dartwing-gateway # Name of the container
+        container_name: ${PROJECT_NAME:-gateway} # Name of the container
         build:
             context: ..
             dockerfile: .devcontainer/Dockerfile
@@ -25,7 +25,7 @@ services:
             - dartnet
         volumes:
             # Workspace
-            - ..:/workspaces/dartwing-gateway:cached
+            - ..:/workspaces/${PROJECT_NAME:-gateway}:cached
 
             # Git configuration
             - ~/.gitconfig:/home/${USER:-vscode}/.gitconfig:ro

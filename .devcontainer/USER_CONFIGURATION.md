@@ -59,11 +59,13 @@ Ctrl+Shift+P → "Dev Containers: Reopen in Container"
 ### Project Configuration
 
 ```env
-PROJECT_NAME=dartwing-gateway          # Unique container identifier
-COMPOSE_PROJECT_NAME=dartwingers       # Groups related containers
+PROJECT_NAME=<project>-gateway         # Unique container identifier
+COMPOSE_PROJECT_NAME=<project>         # Groups related containers
 ```
 
 **Important**: `PROJECT_NAME` must be unique across all your projects to avoid container name conflicts.
+
+**Tip**: The `.env.example` uses shell commands to auto-detect the project name from the parent directory.
 
 ### User Configuration
 
@@ -97,7 +99,7 @@ These ports are exposed to your host system for testing and debugging.
 NETWORK_NAME=dartnet    # Shared Docker network for service communication
 ```
 
-The container connects to a shared `dartnet` network, allowing communication with other Dartwingers services (like dartwing-app, databases, etc.).
+The container connects to a shared Docker network, allowing communication with other project services (app, databases, etc.).
 
 ## Team Best Practices
 
@@ -133,7 +135,8 @@ If you encounter permission errors:
 If you get "container name already in use" errors:
 
 ```bash
-docker rm -f dartwing-gateway
+docker rm -f <your-container-name>
+# Check container name in .env file (PROJECT_NAME variable)
 ```
 
 Then reopen in VS Code.
@@ -190,7 +193,7 @@ For issues or questions:
 1. Check this documentation
 2. Review `.env.example` for configuration options
 3. Ask in the team channel
-4. Check Docker logs: `docker logs dartwing-gateway`
+4. Check Docker logs: `docker logs <your-container-name>`
 
 ## File Checklist
 

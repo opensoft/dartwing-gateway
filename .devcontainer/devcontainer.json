@@ -5,11 +5,11 @@
     "docker-compose.override.yml"
   ],
   "service": "gateway",
-  "workspaceFolder": "/workspaces/dartwing-gateway",
+  "workspaceFolder": "/workspaces/${containerEnv:PROJECT_NAME:gateway}",
   "initializeCommand": [
     "bash",
     "-lc",
-    "cid=$(docker ps -aq --filter name=^dartwing-gateway$); if [ -n \"$cid\" ]; then docker rm -f dartwing-gateway; fi"
+    "cid=$(docker ps -aq --filter name=^${localEnv:PROJECT_NAME}$); if [ -n \"$cid\" ]; then docker rm -f ${localEnv:PROJECT_NAME}; fi"
   ],
   "customizations": {
     "vscode": {
