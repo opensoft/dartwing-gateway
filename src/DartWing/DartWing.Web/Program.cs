@@ -5,7 +5,6 @@ using System.Text.Json.Serialization;
 using DartWing.Frappe;
 using DartWing.KeyCloak;
 using DartWing.Microsoft;
-using DartWing.Web.Api;
 using DartWing.Web.Auth;
 using DartWing.Web.Emails;
 using DartWing.Web.Files;
@@ -16,7 +15,7 @@ using DartWing.Web.Logging;
 using DartWing.Web.Suppliers;
 using DartWing.Web.Users;
 using Microsoft.AspNetCore.Http.Json;
-using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi;
 
 var sw = Stopwatch.StartNew();
 
@@ -28,8 +27,6 @@ builder.Services.AddOpenApi();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddHealthChecks();
-builder.Services.AddHttpClient("Azure");
-
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("DefaultPolicy", b =>
@@ -72,22 +69,22 @@ builder.Services.AddSwaggerGen(options =>
         }
     });
     
-    OpenApiSecurityScheme keycloakSecurityScheme = new()
-    {
-        Reference = new OpenApiReference
-        {
-            Id = "Keycloak",
-            Type = ReferenceType.SecurityScheme
-        },
-        In = ParameterLocation.Header,
-        Name = "Bearer",
-        Scheme = "Bearer",
-    };
+    // OpenApiSecurityScheme keycloakSecurityScheme = new()
+    // {
+    //     Reference = new OpenApiReference
+    //     {
+    //         Id = "Keycloak",
+    //         Type = ReferenceType.SecurityScheme
+    //     },
+    //     In = ParameterLocation.Header,
+    //     Name = "Bearer",
+    //     Scheme = "Bearer",
+    // };
 
-    options.AddSecurityRequirement(new OpenApiSecurityRequirement
-    {
-        { keycloakSecurityScheme, [] }
-    });
+    // options.AddSecurityRequirement(new OpenApiSecurityRequirement
+    // {
+    //     { keycloakSecurityScheme, [] }
+    // });
 });
 
 builder.Services.Configure<JsonOptions>(options =>
@@ -134,7 +131,6 @@ app.UseAntiforgery();
 
 app.UseHealthChecks("/health");
 
-app.RegisterAzureApiEndpoints();
 app.RegisterUserApiEndpoints();
 app.RegisterTokenApiEndpoints();
 app.RegisterCompanyApiEndpoints();

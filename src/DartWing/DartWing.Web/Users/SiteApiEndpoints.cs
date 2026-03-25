@@ -32,6 +32,7 @@ public static partial class SiteApiEndpoints
                 var hs = allCompanies.Select(x => x.GetSite())
                     .Select(x => x.Split('.', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.ToLowerInvariant())
                     .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Select(x => x!)
                     .ToImmutableHashSet();
                 site.SiteName = AbbreviationHelper.GenerateUniqueAbbreviation(site.Company.Name, hs);
             }
@@ -51,16 +52,17 @@ public static partial class SiteApiEndpoints
             };
             
             var existCompany = await kcProvider.GetOrganization(job.SiteHost, job.CompanyName, ct);
-            if (existCompany != null) return Results.Ok(new SiteCreateResponse{Site = job.SiteHost});
+            if (existCompany != null) return Results.Ok(new SiteCreateResponse{Site = job.SiteHost, CompanyAlias = existCompany.Alias ?? ""});
             
             logger.LogInformation("Create site {id} company {c} by {u}", site.SiteName, site.Company.Name, userEmail);
             var msToken = await kcTokenProvider.TokenExchangeProviderAccessToken(userEmail, "microsoft", false, ct);
             job.Domain = "https://" + job.SiteHost;
             job.MsTenantId = AuthExtension.GetTenantId(msToken?.AccessToken) ?? "";
+            job.CompanyAlias = await frappeSiteService.ReserveCompanyAlias(job, ct);
             var result = await frappeSiteService.CreateSite(job, CancellationToken.None);
             return string.IsNullOrEmpty(result)
                 ? Results.Conflict("Error occured, try again later")
-                : Results.Ok(new SiteCreateResponse{Site = job.SiteHost});
+                : Results.Ok(new SiteCreateResponse{Site = job.SiteHost, CompanyAlias = job.CompanyAlias});
         }).WithName("CreateSite").WithSummary("Create new site").Produces<SiteCreateResponse>();
         
         group.MapDelete("{site}", async (
@@ -88,7 +90,7 @@ public static partial class SiteApiEndpoints
             logger.LogInformation("Get site status {id} by {u}", site, userEmail); 
             var siteJob = frappeSiteService.GetLocalSiteStatus(site);
             var status = siteJob?.Status ?? EFrappeSiteStatus.InProgress;
-            return Results.Ok(new SiteStatus{Status = status, CompanyAlias = siteJob?.CompanyAlias});
+            return Results.Ok(new SiteStatus{Status = status, CompanyAlias = siteJob?.CompanyAlias ?? ""});
         }).WithName("GetSiteStatus").WithSummary("Get site status").Produces<SiteStatus>().RequireAuthorization(AuthConstants.AdminPolicy);
     }
 

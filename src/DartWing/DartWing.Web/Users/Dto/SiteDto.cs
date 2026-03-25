@@ -19,13 +19,14 @@ public sealed class SiteCreateRequest
 
 public sealed class SiteCreateResponse
 {
-    public string Site { get; set; }
+    public string Site { get; set; } = "";
+    public string CompanyAlias { get; set; } = "";
 }
 
 public sealed class SiteStatus
 {
     public EFrappeSiteStatus Status { get; set; }
-    public string CompanyAlias { get; set; }
+    public string CompanyAlias { get; set; } = "";
 }
 
 public enum EDocumentUploadMethod

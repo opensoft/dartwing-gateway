@@ -14,10 +14,10 @@ public sealed class CompanyCreateRequest
 
     public string[] InvoicesWhitelist { get; set; } = [];
     public string? FrappeSiteUrl { get; set; }
-    public string Alias { get; set; }
+    public string? Alias { get; set; }
     public string SiteHost { get; set; }
-    
-    public CompanyAddress Address { get; set; }
+
+    public CompanyAddress? Address { get; set; }
 }
 
 public sealed class CompanyAddress

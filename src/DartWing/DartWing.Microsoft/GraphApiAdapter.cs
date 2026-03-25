@@ -74,32 +74,65 @@ public sealed class GraphApiAdapter : IDisposable
         return result;
     }
 
-    public async Task<MicrosoftSiteInfo[]> GetAllSites(CancellationToken ct)
+    private async Task<List<Site>> FetchAllSites(CancellationToken ct)
     {
-        var request = await _graphClient.Sites.GetAsync(cancellationToken: ct);
+        var cacheKey = $"Microsoft:Sites:All__{_tokenKey}";
+        if (_memoryCache.TryGetValue(cacheKey, out List<Site>? cached) && cached != null)
+            return cached;
+
         List<Site> allSites = [];
+        var request = await _graphClient.Sites
+            .WithUrl("https://graph.microsoft.com/v1.0/sites?search=LastModifiedTime>=2015-01-01")
+            .GetAsync(cancellationToken: ct);
         while (request?.Value != null)
         {
-            if (allSites.Count == 0 && request.OdataNextLink == null)
-            {
-                allSites = request.Value;
-                break;
-            }
             allSites.AddRange(request.Value);
-
-            // If there is a next page, fetch it
             if (request.OdataNextLink != null)
-            {
-                request = await _graphClient.Sites.WithUrl(request.OdataNextLink).GetAsync(cancellationToken: ct);
-            }
+                request = await _graphClient.Sites.WithUrl(request.OdataNextLink)
+                    .GetAsync(cancellationToken: ct);
             else
-            {
                 break;
-            }
         }
+
+        if (allSites.Count > 0)
+            _memoryCache.Set(cacheKey, allSites, TimeSpan.FromSeconds(30));
+
+        return allSites;
+    }
+
+    private static MicrosoftSiteInfo ToSiteInfo(Site s) => new(s.Id, s.Name)
+    {
+        DisplayName = s.DisplayName,
+        Description = s.Description,
+        LastModifiedDateTime = s.LastModifiedDateTime
+    };
+
+    public async Task<MicrosoftSiteInfo[]> GetAllSites(CancellationToken ct)
+    {
+        var allSites = await FetchAllSites(ct);
         return allSites.Select(s => new MicrosoftSiteInfo(s.Id, s.Name)).ToArray();
     }
-    
+
+    public async Task<MicrosoftSiteInfo[]> SearchSites(string query, CancellationToken ct)
+    {
+        try
+        {
+            var allSites = await FetchAllSites(ct);
+            // Graph search is unreliable for partial strings — filter locally instead
+            return allSites
+                .Where(s => !s.Id?.Contains("-my.sharepoint.com,") == true
+                            && !s.WebUrl?.Contains("-my.sharepoint.com") == true)
+                .Where(s => s.Name?.Contains(query, StringComparison.OrdinalIgnoreCase) == true
+                            || s.DisplayName?.Contains(query, StringComparison.OrdinalIgnoreCase) == true)
+                .Select(ToSiteInfo)
+                .ToArray();
+        }
+        catch (ODataError)
+        {
+            return [];
+        }
+    }
+
     public async Task<MicrosoftSiteInfo?> GetSite(string siteName, string? tenantName, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(tenantName))
@@ -197,12 +230,23 @@ public sealed class GraphApiAdapter : IDisposable
         }
     }
 
-    public async Task<MicrosoftDriveInfo[]?> GetAllDrives(string siteId, CancellationToken ct)
+    public async Task<MicrosoftDriveInfo[]> GetAllDrives(string siteId, CancellationToken ct)
     {
         try
         {
-            var drives = await _graphClient.Sites[siteId].Drives.GetAsync(cancellationToken: ct);
-            return drives?.Value?.Select(s => new MicrosoftDriveInfo(s.Id, s.Name)).ToArray();
+            var request = await _graphClient.Sites[siteId].Drives.GetAsync(cancellationToken: ct);
+            List<Drive> allDrives = [];
+            while (request?.Value != null)
+            {
+                allDrives.AddRange(request.Value);
+                if (request.OdataNextLink != null)
+                    request = await _graphClient.Sites[siteId].Drives
+                        .WithUrl(request.OdataNextLink).GetAsync(cancellationToken: ct);
+                else
+                    break;
+            }
+            return allDrives.Select(s => new MicrosoftDriveInfo(s.Id, s.Name)
+                { LastModifiedDateTime = s.LastModifiedDateTime }).ToArray();
         }
         catch (ODataError)
         {
@@ -219,13 +263,43 @@ public sealed class GraphApiAdapter : IDisposable
     public async Task<List<MicrosoftFolderInfo>> GetAllFolders(string driveId, string itemId = "root",
         bool recursive = false, CancellationToken ct = default)
     {
-        List<MicrosoftFolderInfo> folders = [];
+        var cacheKey = $"Microsoft:Drives:{_tokenKey}:Folders:{driveId}:{itemId}:{recursive}";
+        if (_memoryCache.TryGetValue(cacheKey, out List<MicrosoftFolderInfo>? cached) && cached != null)
+            return cached;
 
+        List<MicrosoftFolderInfo> folders = [];
         await FetchFoldersRecursive(driveId, itemId, null, folders, recursive, ct);
 
+        _memoryCache.Set(cacheKey, folders, TimeSpan.FromSeconds(12));
         return folders;
     }
     
+    public async Task<string?> GetDriveName(string driveId, CancellationToken ct)
+    {
+        try
+        {
+            var drive = await _graphClient.Drives[driveId].GetAsync(cancellationToken: ct);
+            return drive?.Name;
+        }
+        catch (ODataError)
+        {
+            return null;
+        }
+    }
+
+    public async Task<string?> GetFolderName(string driveId, string folderId, CancellationToken ct)
+    {
+        try
+        {
+            var item = await _graphClient.Drives[driveId].Items[folderId].GetAsync(cancellationToken: ct);
+            return item?.Name;
+        }
+        catch (ODataError)
+        {
+            return null;
+        }
+    }
+
     public async Task<bool> IsFileExists(string driveId, string itemId, string fileName, CancellationToken ct)
     {
         try
@@ -247,34 +321,32 @@ public sealed class GraphApiAdapter : IDisposable
     {
         try
         {
-            var drivesKey = $"Microsoft:Drives:{_tokenKey}:Folders:{driveId}:{itemId}";
-            DriveItemCollectionResponse? children = null;
-            if (_memoryCache.TryGetValue(drivesKey, out DriveItemCollectionResponse? ch) && ch != null)
-            {
-                children = ch;
-            }
-            else
-            {
-                children = await _graphClient.Drives[driveId].Items[itemId].Children.GetAsync(cancellationToken: ct);
-                if (children?.Value != null) _memoryCache.Set(drivesKey, children, TimeSpan.FromSeconds(12));
-            }
+            var children = await _graphClient.Drives[driveId].Items[itemId].Children.GetAsync(cancellationToken: ct);
 
-            if (children?.Value == null) return;
-            foreach (var item in children.Value)
+            while (children?.Value != null)
             {
-                if (item.Folder == null) continue;
-                var folderInfo = new MicrosoftFolderInfo
+                foreach (var item in children.Value)
                 {
-                    Id = item.Id!,
-                    Name = item.Name!,
-                    ParentFolderId = parentFolderId,
-                    DriveId = driveId,
-                    LastModifiedDateTime = item.LastModifiedDateTime
-                };
+                    if (item.Folder == null) continue;
+                    var folderInfo = new MicrosoftFolderInfo
+                    {
+                        Id = item.Id!,
+                        Name = item.Name!,
+                        ParentFolderId = parentFolderId,
+                        DriveId = driveId,
+                        LastModifiedDateTime = item.LastModifiedDateTime
+                    };
 
-                folders.Add(folderInfo);
+                    folders.Add(folderInfo);
 
-                if (recursive) await FetchFoldersRecursive(driveId, item.Id!, item.Id!, folders, true, ct);
+                    if (recursive) await FetchFoldersRecursive(driveId, item.Id!, item.Id!, folders, true, ct);
+                }
+
+                if (children.OdataNextLink != null)
+                    children = await _graphClient.Drives[driveId].Items[itemId].Children
+                        .WithUrl(children.OdataNextLink).GetAsync(cancellationToken: ct);
+                else
+                    break;
             }
         }
         catch (ODataError)

@@ -37,8 +37,16 @@ public sealed class FrappeSiteHostedService : BackgroundService
                         {
                             _logger.LogInformation("FrappeSiteHostedService site created {s} {j} {sw}",
                                 siteJob.SiteHost, siteJob.SiteJobId, sw);
-                            await siteService.OnSiteCreated(siteJob, stoppingToken);
-                            _storage.RemoveSiteJob(siteJob.SiteHost);
+                            if (await siteService.OnSiteCreated(siteJob, stoppingToken))
+                            {
+                                _storage.RemoveSiteJob(siteJob.SiteHost);
+                            }
+                            else
+                            {
+                                _logger.LogWarning(
+                                    "FrappeSiteHostedService finalization failed for site {s} {j} {sw}; will retry",
+                                    siteJob.SiteHost, siteJob.SiteJobId, sw);
+                            }
                         } break;
                         case EFrappeJobSiteStatus.Failed:
                         {

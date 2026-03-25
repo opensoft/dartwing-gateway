@@ -117,5 +117,7 @@ public sealed class CompanyProviderResponse
 public sealed class CompanyPath
 {
     public string DriveId { get; set; }
+    public string? DriveName { get; set; }
     public string FolderId { get; set; }
+    public string? FolderName { get; set; }
 }

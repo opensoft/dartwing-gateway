@@ -77,6 +77,20 @@ public sealed class FrappeSiteService
         }
 
         job.IsActive = _frappeSiteSettings.IsActive;
+        if (!job.IsActive)
+        {
+            try
+            {
+                if (!await OnSiteCreated(job, ct))
+                    return "";
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "OnSiteCreated failed for site {site}", job.SiteHost);
+                return "";
+            }
+            return job.SiteHost;
+        }
         _frappeSiteStorage.AddSiteJob(job);
 
         _logger.LogInformation("Frappe site creation OK {site} jobName={j} company={comp} by {user} {sw}", job.SiteHost,
@@ -144,19 +158,29 @@ public sealed class FrappeSiteService
         return response?.Status;
     }
 
-    public async Task OnSiteCreated(FrappeSiteJob siteJob, CancellationToken ct)
+    public async Task<string> ReserveCompanyAlias(FrappeSiteJob siteJob, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(siteJob.CompanyAlias))
+            return siteJob.CompanyAlias;
+
+        var alias = await GenerateCompanyAlias(siteJob, ct);
+        siteJob.CompanyAlias = alias;
+        return alias;
+    }
+
+    public async Task<bool> OnSiteCreated(FrappeSiteJob siteJob, CancellationToken ct)
     {
         var sw = Stopwatch.GetTimestamp();
         _logger.LogInformation("OnSiteCreated site: {siteUrl}", siteJob.SiteHost);
         var siteUrl =  $"https://{siteJob.SiteHost.TrimEnd('/')}";
         var user = await _keyCloakProvider.GetUserById(siteJob.UserId, ct);
-        if (user == null) return;
-        var allCompanies = await _keyCloakProvider.GetAllOrganizations(ct);
-        var hs = allCompanies.Select(x => x.Alias).ToImmutableHashSet();
+        if (user == null)
+        {
+            _logger.LogWarning("OnSiteCreated user not found {userId} for site {siteUrl}", siteJob.UserId, siteJob.SiteHost);
+            return false;
+        }
         var company = siteJob.Request.Company;
-        var alias = string.IsNullOrWhiteSpace(company.Alias)
-            ? AbbreviationHelper.GenerateUniqueAbbreviation(siteJob.CompanyName, hs)
-            : company.Alias;
+        var alias = await ReserveCompanyAlias(siteJob, ct);
         
         KeyCloakOrganization keyCloakCompany = new()
         {
@@ -173,11 +197,16 @@ public sealed class FrappeSiteService
             .AddCreatedDate(DateTimeOffset.UtcNow)
             .AddUserPermissions(siteJob.UserEmail, AuthConstants.LedgerCompanyAllPermissions)
             .AddStorageType(siteJob.StorageType.ToString())
-            .AddAddress(new KeyCloakOrganizationAddress
+            .AddUseServiceToken("true");
+
+        if (addr != null)
+        {
+            keyCloakCompany.AddAddress(new KeyCloakOrganizationAddress
             {
                 City = addr.City, Country = addr.Country, Street = addr.Street, State = addr.State,
                 Zip = addr.PostalCode, Name = addr.BusinessName
             });
+        }
 
         var orgId = await _keyCloakProvider.CreateOrganizationWithPermissions(keyCloakCompany, user.Id, ct);
         
@@ -204,6 +233,22 @@ public sealed class FrappeSiteService
 
         _logger.LogInformation("OnSiteCreated site: {siteUrl} OK {sw} {totalSw}", siteUrl, sw.Sw(),
             DateTime.UtcNow - siteJob.StartTime);
+        return true;
+    }
+
+    private async Task<string> GenerateCompanyAlias(FrappeSiteJob siteJob, CancellationToken ct)
+    {
+        var companyAlias = siteJob.Request.Company.Alias;
+        if (!string.IsNullOrWhiteSpace(companyAlias))
+            return companyAlias;
+
+        var allCompanies = await _keyCloakProvider.GetAllOrganizations(ct);
+        var aliases = allCompanies
+            .Select(x => x.Alias)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => x!)
+            .ToImmutableHashSet();
+        return AbbreviationHelper.GenerateUniqueAbbreviation(siteJob.CompanyName, aliases);
     }
 
     private static string GenerateFrappeSecret(string host)

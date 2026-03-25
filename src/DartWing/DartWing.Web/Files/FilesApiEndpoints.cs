@@ -10,6 +10,7 @@ using DartWing.Web.Files.Dto;
 using DartWing.Web.Users.Dto;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Graph.Models.ODataErrors;
 
 namespace DartWing.Web.Files;
 
@@ -310,7 +311,8 @@ public static class FilesApiEndpoints
             logger.LogInformation("API send file link for company={c} email={ow} asService={isc} tenant={t}",
                 kcOrg.Name, userEmail, isClientToken, tenantId);
 
-            var token = isClientToken
+            var useInternalClientToken = tenantId == InternalTenantId;
+            var token = isClientToken || useInternalClientToken
                 ? await graphApiHelper.GetClientAccessToken(tenantId, ct)
                 : (await keyCloakHelper.TokenExchangeProviderAccessToken(userEmail, "microsoft-sharepoint", false, ct))
                 .AccessToken;
@@ -340,6 +342,192 @@ public static class FilesApiEndpoints
 
             return Results.Ok(new CdFileLinkResponse { Link = driveItem.WebUrl!});
         }).WithName("UploadFileLink").WithSummary("Upload file by link").RequireAuthorization(AuthConstants.UserPolicy);
+
+        // SharePoint browsing endpoints — client token, admin only, internal tenant only
+        var spGroup = endpoints.MapGroup("api/file/{alias}/sharepoint")
+            .WithTags("SharePoint").RequireAuthorization(AuthConstants.AdminPolicy);
+
+        spGroup.MapGet("sites", async (
+            [FromRoute] string alias,
+            [FromQuery] string? search,
+            [FromServices] ILogger<Program> logger,
+            [FromServices] IHttpClientFactory httpClientFactory,
+            [FromServices] IHttpContextAccessor httpContextAccessor,
+            [FromServices] KeyCloakTokenProvider keyCloakHelper,
+            [FromServices] GraphApiHelper graphApiHelper,
+            [FromServices] IMemoryCache memoryCache,
+            CancellationToken ct) =>
+        {
+            var sw = Stopwatch.GetTimestamp();
+            if (string.IsNullOrEmpty(search) || search.Length < 3)
+                return Results.BadRequest("Search query must be at least 3 characters");
+            var userEmail = httpContextAccessor.GetEmail();
+            if (userEmail == null) return Results.BadRequest("User email is null");
+            var tenantResult = await GetInternalTenantResult(keyCloakHelper, userEmail, ct);
+            if (!string.IsNullOrEmpty(tenantResult.RedirectUrl))
+                return Results.Ok(new CdFolderResponse(tenantResult.RedirectUrl));
+            if (!tenantResult.IsInternal || string.IsNullOrEmpty(tenantResult.TenantId)) return Results.Forbid();
+            var clientToken = await graphApiHelper.GetClientAccessToken(tenantResult.TenantId, ct);
+            if (string.IsNullOrEmpty(clientToken)) return Results.Conflict("Failed to get client token");
+            try
+            {
+                using GraphApiAdapter adapter = new(clientToken, httpClientFactory, memoryCache);
+                var sites = await adapter.SearchSites(search, ct);
+                var folders = sites.Select(s => new CdFolder
+                {
+                    Id = s.Id, Name = s.Name, FolderType = "Site", CanBeSelected = false,
+                    DisplayName = s.DisplayName, Description = s.Description,
+                    LastModifiedDateTime = s.LastModifiedDateTime
+                }).ToList();
+                logger.LogInformation("SharePoint search sites {e} {c} search={s} count={cnt} {sw}",
+                    userEmail, alias, search, folders.Count, sw.Sw());
+                return Results.Ok(new CdFolderResponse { Folders = folders });
+            }
+            catch (ODataError)
+            {
+                return Results.Ok(new CdFolderResponse { Folders = [] });
+            }
+        }).WithName("SearchSharePointSites").WithSummary("Search SharePoint sites").Produces<CdFolderResponse>();
+
+        spGroup.MapGet("sites/{siteId}/drives", async (
+            [FromRoute] string alias,
+            [FromRoute] string siteId,
+            [FromServices] ILogger<Program> logger,
+            [FromServices] IHttpClientFactory httpClientFactory,
+            [FromServices] IHttpContextAccessor httpContextAccessor,
+            [FromServices] KeyCloakTokenProvider keyCloakHelper,
+            [FromServices] GraphApiHelper graphApiHelper,
+            [FromServices] IMemoryCache memoryCache,
+            CancellationToken ct) =>
+        {
+            var sw = Stopwatch.GetTimestamp();
+            var userEmail = httpContextAccessor.GetEmail();
+            if (userEmail == null) return Results.BadRequest("User email is null");
+            var tenantResult = await GetInternalTenantResult(keyCloakHelper, userEmail, ct);
+            if (!string.IsNullOrEmpty(tenantResult.RedirectUrl))
+                return Results.Ok(new CdFolderResponse(tenantResult.RedirectUrl));
+            if (!tenantResult.IsInternal || string.IsNullOrEmpty(tenantResult.TenantId)) return Results.Forbid();
+            var clientToken = await graphApiHelper.GetClientAccessToken(tenantResult.TenantId, ct);
+            if (string.IsNullOrEmpty(clientToken)) return Results.Conflict("Failed to get client token");
+            try
+            {
+                using GraphApiAdapter adapter = new(clientToken, httpClientFactory, memoryCache);
+                var drives = await adapter.GetAllDrives(siteId, ct);
+                var folders = drives.Select(d => new CdFolder
+                {
+                    Id = d.Id, Name = d.Name, FolderType = "Drive", CanBeSelected = false,
+                    DisplayName = d.Name, ParentId = siteId,
+                    LastModifiedDateTime = d.LastModifiedDateTime
+                }).ToList();
+                logger.LogInformation("SharePoint get drives {e} {c} site={s} count={cnt} {sw}",
+                    userEmail, alias, siteId, folders.Count, sw.Sw());
+                return Results.Ok(new CdFolderResponse { Folders = folders });
+            }
+            catch (ODataError)
+            {
+                return Results.Ok(new CdFolderResponse { Folders = [] });
+            }
+        }).WithName("GetSharePointDrives").WithSummary("Get drives for SharePoint site").Produces<CdFolderResponse>();
+
+        spGroup.MapGet("drives/{driveId}/folders", async (
+            [FromRoute] string alias,
+            [FromRoute] string driveId,
+            [FromServices] ILogger<Program> logger,
+            [FromServices] IHttpClientFactory httpClientFactory,
+            [FromServices] IHttpContextAccessor httpContextAccessor,
+            [FromServices] KeyCloakTokenProvider keyCloakHelper,
+            [FromServices] GraphApiHelper graphApiHelper,
+            [FromServices] IMemoryCache memoryCache,
+            CancellationToken ct) =>
+        {
+            var sw = Stopwatch.GetTimestamp();
+            var userEmail = httpContextAccessor.GetEmail();
+            if (userEmail == null) return Results.BadRequest("User email is null");
+            var tenantResult = await GetInternalTenantResult(keyCloakHelper, userEmail, ct);
+            if (!string.IsNullOrEmpty(tenantResult.RedirectUrl))
+                return Results.Ok(new CdFolderResponse(tenantResult.RedirectUrl));
+            if (!tenantResult.IsInternal || string.IsNullOrEmpty(tenantResult.TenantId)) return Results.Forbid();
+            var clientToken = await graphApiHelper.GetClientAccessToken(tenantResult.TenantId, ct);
+            if (string.IsNullOrEmpty(clientToken)) return Results.Conflict("Failed to get client token");
+            try
+            {
+                using GraphApiAdapter adapter = new(clientToken, httpClientFactory, memoryCache);
+                var flds = await adapter.GetAllFolders(driveId, ct: ct);
+                var folders = flds.Select(f => new CdFolder
+                {
+                    Id = f.Id, Name = f.Name, FolderType = "Folder",
+                    DisplayName = f.Name, ParentId = f.ParentFolderId ?? f.DriveId,
+                    LastModifiedDateTime = f.LastModifiedDateTime
+                }).OrderByDescending(x => x.LastModifiedDateTime).ToList();
+                logger.LogInformation("SharePoint get root folders {e} {c} drive={d} count={cnt} {sw}",
+                    userEmail, alias, driveId, folders.Count, sw.Sw());
+                return Results.Ok(new CdFolderResponse { Folders = folders });
+            }
+            catch (ODataError)
+            {
+                return Results.Ok(new CdFolderResponse { Folders = [] });
+            }
+        }).WithName("GetSharePointRootFolders").WithSummary("Get root folders for drive").Produces<CdFolderResponse>();
+
+        spGroup.MapGet("drives/{driveId}/folders/{folderId}", async (
+            [FromRoute] string alias,
+            [FromRoute] string driveId,
+            [FromRoute] string folderId,
+            [FromServices] ILogger<Program> logger,
+            [FromServices] IHttpClientFactory httpClientFactory,
+            [FromServices] IHttpContextAccessor httpContextAccessor,
+            [FromServices] KeyCloakTokenProvider keyCloakHelper,
+            [FromServices] GraphApiHelper graphApiHelper,
+            [FromServices] IMemoryCache memoryCache,
+            CancellationToken ct) =>
+        {
+            var sw = Stopwatch.GetTimestamp();
+            var userEmail = httpContextAccessor.GetEmail();
+            if (userEmail == null) return Results.BadRequest("User email is null");
+            var tenantResult = await GetInternalTenantResult(keyCloakHelper, userEmail, ct);
+            if (!string.IsNullOrEmpty(tenantResult.RedirectUrl))
+                return Results.Ok(new CdFolderResponse(tenantResult.RedirectUrl));
+            if (!tenantResult.IsInternal || string.IsNullOrEmpty(tenantResult.TenantId)) return Results.Forbid();
+            var clientToken = await graphApiHelper.GetClientAccessToken(tenantResult.TenantId, ct);
+            if (string.IsNullOrEmpty(clientToken)) return Results.Conflict("Failed to get client token");
+            try
+            {
+                using GraphApiAdapter adapter = new(clientToken, httpClientFactory, memoryCache);
+                var flds = await adapter.GetAllFolders(driveId, folderId, ct: ct);
+                var folders = flds.Select(f => new CdFolder
+                {
+                    Id = f.Id, Name = f.Name, FolderType = "Folder",
+                    DisplayName = f.Name, ParentId = f.ParentFolderId ?? f.DriveId,
+                    LastModifiedDateTime = f.LastModifiedDateTime
+                }).OrderByDescending(x => x.LastModifiedDateTime).ToList();
+                logger.LogInformation("SharePoint get child folders {e} {c} drive={d} folder={f} count={cnt} {sw}",
+                    userEmail, alias, driveId, folderId, folders.Count, sw.Sw());
+                return Results.Ok(new CdFolderResponse { Folders = folders });
+            }
+            catch (ODataError)
+            {
+                return Results.Ok(new CdFolderResponse { Folders = [] });
+            }
+        }).WithName("GetSharePointChildFolders").WithSummary("Get child folders").Produces<CdFolderResponse>();
+    }
+
+    private const string InternalTenantId = "96d3fa6b-5547-49ca-9af1-dba9bec50c2b";
+
+    private static async ValueTask<InternalTenantResult> GetInternalTenantResult(
+        KeyCloakTokenProvider tokenProvider, string userEmail, CancellationToken ct)
+    {
+        var msToken = await tokenProvider.TokenExchangeProviderAccessToken(userEmail, "microsoft", false, ct);
+        var tenantId = AuthExtension.GetTenantId(msToken.AccessToken);
+        if (!string.IsNullOrEmpty(tenantId))
+            return new InternalTenantResult(tenantId == InternalTenantId, tenantId, null);
+
+        var sharePointToken =
+            await tokenProvider.TokenExchangeProviderAccessToken(userEmail, "microsoft-sharepoint", false, ct);
+        tenantId = AuthExtension.GetTenantId(sharePointToken.AccessToken);
+        if (!string.IsNullOrEmpty(tenantId))
+            return new InternalTenantResult(tenantId == InternalTenantId, tenantId, null);
+
+        return new InternalTenantResult(false, null, tokenProvider.BuildProviderRedirectUrl("microsoft-sharepoint"));
     }
 
     private static async ValueTask<string?> GetMsTenantId(KeyCloakTokenProvider tokenProvider, KeyCloakProvider provider,
@@ -356,4 +544,6 @@ public static class FilesApiEndpoints
 
         return tenantId;
     }
+
+    private readonly record struct InternalTenantResult(bool IsInternal, string? TenantId, string? RedirectUrl);
 }

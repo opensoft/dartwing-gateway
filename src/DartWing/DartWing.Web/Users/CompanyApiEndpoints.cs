@@ -9,6 +9,7 @@ using DartWing.Web.Auth;
 using DartWing.Web.Frappe;
 using DartWing.Web.Users.Dto;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace DartWing.Web.Users;
 
@@ -59,7 +60,6 @@ public static class CompanyApiEndpoints
         
         group.MapGet("path", async (
                 string alias,
-                [FromServices] ILogger<Program> logger,
                 [FromServices] KeyCloakProvider keyCloakHelper,
                 [FromServices] IHttpContextAccessor httpContextAccessor,
                 CancellationToken ct) =>
@@ -69,7 +69,11 @@ public static class CompanyApiEndpoints
                 var pathString = org.GetPath();
                 if (string.IsNullOrEmpty(pathString)) return Results.Ok(new CompanyPath());
                 var path = JsonSerializer.Deserialize<MicrosoftGraphApiDriveIdFolderId>(pathString);
-                return Results.Ok(new CompanyPath {DriveId = path?.DriveId, FolderId = path?.FolderId});
+                return Results.Ok(new CompanyPath
+                {
+                    DriveId = path?.DriveId, DriveName = path?.DriveName,
+                    FolderId = path?.FolderId, FolderName = path?.FolderName
+                });
             }).WithName("GetCompanyPath").WithSummary("Get company path").Produces<CompanyPath>()
             .RequireAuthorization(AuthConstants.UserPolicy);
         
@@ -78,13 +82,37 @@ public static class CompanyApiEndpoints
                 [FromBody] CompanyPath path,
                 [FromServices] ILogger<Program> logger,
                 [FromServices] KeyCloakProvider keyCloakHelper,
+                [FromServices] GraphApiHelper graphApiHelper,
                 [FromServices] IHttpContextAccessor httpContextAccessor,
+                [FromServices] IMemoryCache memoryCache,
                 CancellationToken ct) =>
             {
                 var org = await keyCloakHelper.GetUserOrganization(httpContextAccessor.GetUserId()!, alias, ct);
                 if (org == null) return Results.NotFound();
-                org.AddPath(JsonSerializer.Serialize(new MicrosoftGraphApiDriveIdFolderId
-                    { FolderId = path.FolderId, DriveId = path.DriveId }));
+                var driveIdFolderId = new MicrosoftGraphApiDriveIdFolderId
+                    { FolderId = path.FolderId, DriveId = path.DriveId };
+
+                if (!string.IsNullOrEmpty(path.DriveId))
+                {
+                    try
+                    {
+                        var tenantId = org.GetMsTenantId();
+                        if (!string.IsNullOrEmpty(tenantId))
+                        {
+                            var clientToken = await graphApiHelper.GetClientAccessToken(tenantId, ct);
+                            using var adapter = new GraphApiAdapter(clientToken, null, memoryCache);
+                            driveIdFolderId.DriveName = await adapter.GetDriveName(path.DriveId, ct);
+                            if (!string.IsNullOrEmpty(path.FolderId))
+                                driveIdFolderId.FolderName = await adapter.GetFolderName(path.DriveId, path.FolderId, ct);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex, "Failed to resolve drive/folder names for {alias}", alias);
+                    }
+                }
+
+                org.AddPath(JsonSerializer.Serialize(driveIdFolderId));
                 await keyCloakHelper.UpdateOrganization(org, ct);
                 return Results.Ok();
             }).WithName("SetCompanyPath").WithSummary("Set company path")
@@ -104,6 +132,7 @@ public static class CompanyApiEndpoints
             if (userId == null || userEmail == null) return Results.BadRequest("User email is null");
             var provider = httpContextAccessor.HttpContext!.RequestServices;
             var isCreate = string.IsNullOrWhiteSpace(company.Id);
+            if (company.Address == null) return Results.BadRequest("Company address is required");
             var keyCloakCompany = isCreate ? null : await keyCloakHelper.GetOrganization(company.SiteHost, company.Name, ct);
             var erpCompanyService = isCreate
                 ? null
